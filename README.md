@@ -1,0 +1,1 @@
+FastAPI-based backend for a Healthcare Appointment Booking system using Model Context Protocol (MCP) tools. Features include AI-driven RAG-based recommendations, user and professional management, PDF uploads, and scalable data handling with MongoDB, Redis, Qdrant, and Gemini.
