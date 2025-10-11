@@ -8,6 +8,13 @@ from config import ACCESS_TOKEN, GOOGLE_API_KEY, MONGODB_URI, REDIS_HOST, REDIS_
 from pymongo import AsyncMongoClient
 from datetime import datetime, timedelta, timezone
 import re
+from qdrant_client import QdrantClient
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from config import QDRANT_URL, QDRANT_API_KEY
+
+# Initialize Qdrant and Embeddings (singleton at module level)
+qdrant_client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+embedding_model = GoogleGenerativeAIEmbeddings(model="gemini-embedding-001", api_key=GOOGLE_API_KEY)
 
 # --------------------------
 # Initialize MCP
@@ -45,24 +52,55 @@ def check_auth(token: str):
 # --------------------------
 # 1. Recommendation Tool
 # --------------------------
+
+
 @mcp.tool()
 async def recommend_service(chat_id: str, user_message: str, token: str):
-    """Suggest healthcare service and ask city using Gemini"""
+    """Suggest healthcare service based on PDF context using RAG + Gemini"""
     check_auth(token)
 
+    # -------------------------
+    # 1️⃣ Embed user query
+    # -------------------------
+    query_embedding = embedding_model.embed_query(user_message)
+
+    # -------------------------
+    # 2️⃣ Retrieve top-k relevant PDFs from Qdrant
+    # -------------------------
+    result = qdrant_client.search(
+        collection_name="healthcare_docs",
+        query_vector=query_embedding,
+        limit=5
+    )
+
+    docs_text = "\n".join([hit.payload.get("text_preview", "") if hit.payload else "" for hit in result])
+
+    # -------------------------
+    # 3️⃣ Generate recommendation using Gemini LLM
+    # -------------------------
     prompt = f"""
-    You are a healthcare assistant. 
-    User says: "{user_message}".
-    Suggest a relevant healthcare professional type 
-    (Cardiologist, Dermatologist, Dentist, Neurologist)
-    and ask for their city (Kolkata, Pune, Bangalore, Delhi).
-    """
+You are a healthcare assistant.
+A user says: "{user_message}" describing the health issue they are facing.
+You have access to descriptions of available healthcare services (uploaded by admin as PDFs) as context below:
+{docs_text}
+
+Based on this context, recommend the most appropriate healthcare service for the user 
+(e.g., Cardiologist, Dermatologist, Dentist, Neurologist). Keep your response concise and clear.
+
+After recommending the service type, ask the user for their city 
+(e.g., Kolkata, Pune, Bangalore, Delhi) so that suitable professionals can be suggested.
+"""
 
     response = await llm.ainvoke(prompt)
     reply = response.content.strip()
 
-    r.hset(f"session:{chat_id}", mapping={"recommendation": reply, "messages": user_message})
-    r.expire(f"session:{chat_id}", SESSION_TTL)
+    # -------------------------
+    # 4️⃣ Save recommendation to Redis + Mongo
+    # -------------------------
+    session_key = f"session:{chat_id}"
+    r.hset(session_key, mapping={"recommendation": reply, "messages": user_message})
+    r.expire(session_key, SESSION_TTL)
+
     await sessions_collection.update_one(
         {"chat_id": chat_id}, {"$set": {"recommendation": reply}}, upsert=True
     )
