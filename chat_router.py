@@ -16,7 +16,6 @@ from mcp_tools import (
     collect_user_info,
     check_availability
 )
-from fastmcp.tools.tool import TextContent
 
 router = APIRouter()
 
@@ -79,10 +78,8 @@ def convert_tool_response(tool_response):
     from fastmcp.tools.tool import TextContent
     if isinstance(tool_response, dict):
         return tool_response
-    # Handle list of TextContent objects
     if isinstance(tool_response, list):
         return {"content": [{"text": t.text if isinstance(t, TextContent) else str(t)} for t in tool_response]}
-    # Handle single TextContent
     if isinstance(tool_response, TextContent):
         return {"content": [{"text": tool_response.text}]}
     if hasattr(tool_response, "__dict__"):
@@ -96,13 +93,11 @@ def extract_recommendation(tool_response):
             return "⚠️ No recommendation available."
         tool_response = convert_tool_response(tool_response)
 
-        # 1. structured_content
         structured = tool_response.get("structured_content", {})
         for key in ["recommendation", "prompt"]:
             if key in structured and structured[key]:
                 return structured[key]
 
-        # 2. content list
         content_list = tool_response.get("content", [])
         if isinstance(content_list, list):
             for item in content_list:
@@ -117,11 +112,9 @@ def extract_recommendation(tool_response):
                     except json.JSONDecodeError:
                         return text
 
-        # 3. message field
         if "message" in tool_response:
             return tool_response["message"]
 
-        # 4. fallback: first string in dict
         for k, v in tool_response.items():
             if isinstance(v, str):
                 return v
@@ -132,20 +125,81 @@ def extract_recommendation(tool_response):
         return "⚠️ No recommendation available."
 
 # --------------------------
+# User Info / Booking Parsing 
+# --------------------------
+import re
+
+def extract_user_info_from_text(text: str):
+    """Extract name, age, contact, and email from text."""
+    info = {}
+
+    # Name: "my name is X" or "I am X"
+    name_match = re.search(r"(?:my name is|i am)\s+([A-Za-z]+)", text, re.IGNORECASE)
+    if name_match:
+        info["name"] = name_match.group(1).capitalize()
+
+    # Age: "26 years", "26yo", "age 26"
+    age_match = re.search(r"\b(\d{1,3})\s*(?:years|yo|y/o)?\b", text.lower())
+    if age_match:
+        info["age"] = int(age_match.group(1))
+
+    # Contact: 10-digit number
+    contact_match = re.search(r"\b\d{10}\b", text)
+    if contact_match:
+        info["contact"] = contact_match.group(0)
+
+    # Email: simple pattern
+    email_match = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", text)
+    if email_match:
+        info["email"] = email_match.group(0)
+
+    return info
+
+
+def extract_booking_info_from_text(text: str):
+    """Extract booking date/time from normal text."""
+    booking = {"booking_date": None, "booking_time": None}
+    text = text.lower().replace(",", " ").replace(".", " ")
+    words = text.split()
+
+    # Date
+    if "on" in words:
+        try:
+            idx = words.index("on") + 1
+            date_words = []
+            while idx < len(words) and words[idx] != "at":
+                date_words.append(words[idx])
+                idx += 1
+            if len(date_words) >= 2:
+                day = int(date_words[0])
+                month = date_words[-1].capitalize()
+                year = datetime.now().year
+                booking["booking_date"] = datetime.strptime(f"{day} {month} {year}", "%d %b %Y").strftime("%Y-%m-%d")
+        except:
+            pass
+
+    # Time
+    if "at" in words:
+        try:
+            idx = words.index("at") + 1
+            if idx < len(words):
+                booking["booking_time"] = words[idx]  # HH:MM expected
+        except:
+            pass
+
+    return booking
+
+# --------------------------
 # Stage-aware input processing
 # --------------------------
 def preprocess_user_input(stage: str, user_message: str):
-    """
-    Ensure user input is valid for the current stage.
-    """
-    if stage in ["awaiting_user_info", "awaiting_availability"]:
-        try:
-            data = json.loads(user_message)
-            # Clean None values to prevent Redis DataError
-            return {k: v for k, v in data.items() if v is not None}
-        except json.JSONDecodeError:
-            return {}
-    return user_message.strip()  # keep full string for city/professional
+    """Preprocess input depending on conversation stage."""
+    if stage == "awaiting_user_info":
+        return extract_user_info_from_text(user_message)
+    elif stage == "awaiting_availability":
+        return extract_booking_info_from_text(user_message)
+    else:
+        return user_message.strip()
 
 # --------------------------
 # New Chat Endpoint
@@ -155,46 +209,35 @@ async def new_chat(payload: ChatMessage, background_tasks: BackgroundTasks):
     user_message = payload.message.strip()
     chat_id = str(uuid4())
 
-    # Initialize session
     safe_hset(r, f"session:{chat_id}", {"stage": "recommendation"})
     sessions_collection.insert_one({"chat_id": chat_id, "stage": "recommendation", "messages": []})
 
     try:
         processed_input = preprocess_user_input("recommendation", user_message)
 
-        # Run recommendation tool
         tool_response = await run_tool(recommend_service, {
             "chat_id": chat_id,
             "user_message": processed_input,
             "token": ACCESS_TOKEN
         })
 
-        # Convert to dict for safe stage handling
         tool_response_dict = convert_tool_response(tool_response)
         response_text = extract_recommendation(tool_response_dict)
 
-        # Determine next stage (always move to awaiting_city after recommendation)
         next_stage = "awaiting_city"
-
-        # Update Redis and MongoDB
         safe_hset(r, f"session:{chat_id}", {"stage": next_stage, "recommendation": response_text})
         sessions_collection.update_one(
             {"chat_id": chat_id},
             {"$set": {"stage": next_stage, "recommendation": response_text}}
         )
-
-        logger.info(f"[New Chat] Tool response: {tool_response_dict}")
-
     except Exception as e:
         logger.exception(f"[New Chat] Error chat_id={chat_id}: {e}")
         response_text = "⚠️ Something went wrong. Please try again."
 
-    # Save messages asynchronously
     background_tasks.add_task(save_message, chat_id, "user", user_message)
     background_tasks.add_task(save_message, chat_id, "assistant", response_text)
 
     return {"chat_id": chat_id, "response": response_text}
-
 
 # --------------------------
 # Continue Chat Endpoint
@@ -202,75 +245,63 @@ async def new_chat(payload: ChatMessage, background_tasks: BackgroundTasks):
 @router.post("/continue-chat/{chat_id}")
 async def continue_chat(chat_id: str, payload: ChatMessage, background_tasks: BackgroundTasks):
     user_message = payload.message.strip()
-
-    # Fetch stage from Redis (fast), fallback to MongoDB
     session_cache = r.hgetall(f"session:{chat_id}") or {}
-    session_data = sessions_collection.find_one({"chat_id": chat_id}) if not session_cache else {}
-    stage = session_cache.get("stage", session_data.get("stage", "recommendation"))
+    session_data = sessions_collection.find_one({"chat_id": chat_id}) or {}
+    stage = session_cache.get("stage") or session_data.get("stage") or "recommendation"
 
     response_text = "⚠️ No recommendation available."
     next_stage = stage
 
     try:
         logger.info(f"[Continue Chat] Chat ID: {chat_id}, Stage: {stage}, User: {user_message}")
+        processed_input = preprocess_user_input(stage, user_message)
 
-        # Parse JSON input if possible
-        try:
-            processed_input = json.loads(user_message)
-        except json.JSONDecodeError:
-            processed_input = user_message.strip()
-
-        # --------------------------
-        # Stage-based execution
-        # --------------------------
         if stage == "recommendation":
             tool_response = await run_tool(recommend_service, {
                 "chat_id": chat_id,
-                "user_message": processed_input,
+                "user_message": str(processed_input),
                 "token": ACCESS_TOKEN
             })
             response_text = extract_recommendation(tool_response)
             next_stage = "awaiting_city"
 
         elif stage == "awaiting_city":
+            city_str = processed_input if isinstance(processed_input, str) else ""
             tool_response = await run_tool(list_professionals, {
                 "chat_id": chat_id,
-                "city": processed_input,
+                "user_message": city_str,
                 "token": ACCESS_TOKEN
             })
             response_text = extract_recommendation(tool_response)
             next_stage = "awaiting_prof_selection"
 
         elif stage == "awaiting_prof_selection":
+            prof_name = processed_input if isinstance(processed_input, str) else ""
             tool_response = await run_tool(select_professional, {
                 "chat_id": chat_id,
-                "name": processed_input,
+                "user_message": prof_name,
                 "token": ACCESS_TOKEN
             })
             response_text = extract_recommendation(tool_response)
             next_stage = "awaiting_user_info"
 
         elif stage == "awaiting_user_info":
-            user_info_keys = ["name", "age", "contact", "email"]
-            tool_params = {"chat_id": chat_id, "token": ACCESS_TOKEN}
-
-            if isinstance(processed_input, dict):
-                tool_params.update({k: processed_input.get(k) for k in user_info_keys if k in processed_input})
-
-            tool_response = await run_tool(collect_user_info, tool_params)
+            user_info = processed_input if isinstance(processed_input, dict) else {}
+            tool_args = {"chat_id": chat_id, **user_info, "token": ACCESS_TOKEN}
+            tool_response = await run_tool(collect_user_info, tool_args)
             response_text = extract_recommendation(tool_response)
             next_stage = "awaiting_availability"
 
         elif stage == "awaiting_availability":
-            booking_keys = ["booking_date", "booking_time"]
-            tool_params = {"chat_id": chat_id, "token": ACCESS_TOKEN}
+            booking_info = processed_input if isinstance(processed_input, dict) else {}
+            date_time_str = f"{booking_info.get('booking_date','')} {booking_info.get('booking_time','')}"
+            tool_response = await run_tool(check_availability, {
+                "chat_id": chat_id,
+                "user_message": date_time_str.strip(),
+                "token": ACCESS_TOKEN
+            })
 
-            if isinstance(processed_input, dict):
-                tool_params.update({k: processed_input.get(k) for k in booking_keys if k in processed_input})
-
-            tool_response = await run_tool(check_availability, tool_params)
             response_text = extract_recommendation(tool_response)
-
             status = tool_response.get("status") if isinstance(tool_response, dict) else None
             booking_id = tool_response.get("booking_id") if isinstance(tool_response, dict) else None
 
@@ -278,11 +309,9 @@ async def continue_chat(chat_id: str, payload: ChatMessage, background_tasks: Ba
                 next_stage = "complete"
                 r.delete(f"session:{chat_id}")
 
-                # Save chat messages asynchronously
                 background_tasks.add_task(save_message, chat_id, "user", user_message)
                 background_tasks.add_task(save_message, chat_id, "assistant", response_text)
 
-                # Return booking_id explicitly
                 return {
                     "chat_id": chat_id,
                     "response": response_text,
@@ -297,16 +326,18 @@ async def continue_chat(chat_id: str, payload: ChatMessage, background_tasks: Ba
             next_stage = "complete"
             r.delete(f"session:{chat_id}")
 
-        # Update stage in Redis/Mongo if not complete
         if next_stage != "complete":
             safe_hset(r, f"session:{chat_id}", {"stage": next_stage})
-            sessions_collection.update_one({"chat_id": chat_id}, {"$set": {"stage": next_stage}}, upsert=True)
+            sessions_collection.update_one(
+                {"chat_id": chat_id},
+                {"$set": {"stage": next_stage}},
+                upsert=True
+            )
 
     except Exception as e:
         logger.exception(f"[Continue Chat] Error chat_id={chat_id}, stage={stage}: {e}")
         response_text = "⚠️ Something went wrong. Please try again."
 
-    # Save chat messages asynchronously
     background_tasks.add_task(save_message, chat_id, "user", user_message)
     background_tasks.add_task(save_message, chat_id, "assistant", response_text)
 

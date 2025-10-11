@@ -1,11 +1,12 @@
+# mcp_tools.py
 from fastmcp import FastMCP
 from uuid import uuid4
 from loguru import logger
 from langchain_google_genai import ChatGoogleGenerativeAI
 import redis
 from config import ACCESS_TOKEN, GOOGLE_API_KEY, MONGODB_URI, REDIS_HOST, REDIS_PASSWORD, REDIS_PORT
-from pymongo import AsyncMongoClient  # ✅ Use Motor for async Mongo
-from datetime import datetime,timezone
+from pymongo import AsyncMongoClient
+from datetime import datetime, timedelta, timezone
 import re
 
 # --------------------------
@@ -13,19 +14,25 @@ import re
 # --------------------------
 mcp = FastMCP(name="Healthcare Booking MCP")
 
+# --------------------------
 # MongoDB (async)
+# --------------------------
 mongo_client = AsyncMongoClient(MONGODB_URI)
 db = mongo_client["healthcare_app"]
 professionals_collection = db["professionals"]
 sessions_collection = db["booking_sessions"]
 bookings_collection = db["bookings"]
 
+# --------------------------
 # Redis
+# --------------------------
 r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True)
 SESSION_TTL = 3600  # 1 hour
 PROF_LIST_TTL = 1800  # 30 mins
 
+# --------------------------
 # Gemini LLM
+# --------------------------
 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", api_key=GOOGLE_API_KEY)
 
 # --------------------------
@@ -56,16 +63,21 @@ async def recommend_service(chat_id: str, user_message: str, token: str):
 
     r.hset(f"session:{chat_id}", mapping={"recommendation": reply, "messages": user_message})
     r.expire(f"session:{chat_id}", SESSION_TTL)
-    await sessions_collection.update_one({"chat_id": chat_id}, {"$set": {"recommendation": reply}}, upsert=True)
+    await sessions_collection.update_one(
+        {"chat_id": chat_id}, {"$set": {"recommendation": reply}}, upsert=True
+    )
 
-    return {"recommendation": reply, "prompt": "Please select your city (Kolkata, Pune, Bangalore, Delhi)."}
+    return {
+        "recommendation": reply,
+        "prompt": "Please mention your city (e.g., Kolkata, Pune, Bangalore, Delhi)."
+    }
 
 # --------------------------
-# 2. Location-Based Professional Listing Tool
+# 2. List Professionals Tool
 # --------------------------
 @mcp.tool()
-async def list_professionals(chat_id: str, city: str, token: str):
-    """List healthcare professionals available in a city"""
+async def list_professionals(chat_id: str, user_message: str, token: str):
+    """List professionals by city and service type from free text"""
     check_auth(token)
 
     context = r.hgetall(f"session:{chat_id}") or {}
@@ -75,10 +87,14 @@ async def list_professionals(chat_id: str, city: str, token: str):
     match = re.search(r"(Cardiologist|Dermatologist|Dentist|Neurologist)", recommendation, re.IGNORECASE)
     service_type = match.group(1) if match else "General Practitioner"
 
+    # Extract city from user message
     valid_cities = ["Kolkata", "Pune", "Bangalore", "Delhi"]
-    if city not in valid_cities:
-        return {"recommendation": f"Invalid city. Please choose from {', '.join(valid_cities)}."}
+    city_match = next((c for c in valid_cities if re.search(fr"\b{c}\b", user_message, re.IGNORECASE)), None)
+    if not city_match:
+        return {"recommendation": f"Could not detect city. Please mention one of {', '.join(valid_cities)}."}
+    city = city_match
 
+    # Check Redis cache
     cache_key = f"professionals:{city}:{service_type}"
     if r.exists(cache_key):
         professionals = eval(r.get(cache_key))
@@ -86,7 +102,7 @@ async def list_professionals(chat_id: str, city: str, token: str):
     else:
         cursor = professionals_collection.find(
             {"city": {"$regex": f"^{city}$", "$options": "i"},
-             "profession": {"$regex": f"{service_type}", "$options": "i"}},
+             "type": {"$regex": f"{service_type}", "$options": "i"}},
             {"_id": 0}
         )
         professionals = await cursor.to_list(length=None)
@@ -96,38 +112,44 @@ async def list_professionals(chat_id: str, city: str, token: str):
         return {"recommendation": f"No {service_type}s found in {city}."}
 
     formatted = "\n".join(
-        f"- {p['name']} ({p['certification']}) — Available: {', '.join(p['availability'])}"
+        f"- {p['name']} ({p['certification']}) — Available: {', '.join(p['working_days'])} - Year of experience: {p['years_experience']} - Rating: {p['rating']}"
         for p in professionals
     )
 
-    await sessions_collection.update_one({"chat_id": chat_id}, {"$set": {"professionals": professionals}}, upsert=True)
-
+    await sessions_collection.update_one(
+        {"chat_id": chat_id}, {"$set": {"professionals": professionals}}, upsert=True
+    )
+    
     return {
         "recommendation": f"Here are the {service_type}s in {city}:\n{formatted}\n\nPlease type the professional's name to continue."
     }
 
 # --------------------------
-# 3. Professional Selection Tool
+# 3. Select Professional Tool
 # --------------------------
 @mcp.tool()
-async def select_professional(chat_id: str, name: str, token: str):
-    """Select a professional and store it in session"""
+async def select_professional(chat_id: str, user_message: str, token: str):
+    """Select a professional using free text input"""
     check_auth(token)
     session = await sessions_collection.find_one({"chat_id": chat_id}, {"professionals": 1})
     if not session or not session.get("professionals"):
         return {"recommendation": "No professionals available. Please list them first."}
 
     professionals = session["professionals"]
-    selected = next((p for p in professionals if p["name"].lower() == name.lower()), None)
-    if not selected:
-        return {"recommendation": f"No professional named {name} found."}
 
-    await sessions_collection.update_one({"chat_id": chat_id}, {"$set": {"selected_professional": selected}}, upsert=True)
+    # Extract professional name from message
+    selected = next((p for p in professionals if re.search(fr"\b{p['name']}\b", user_message, re.IGNORECASE)), None)
+    if not selected:
+        return {"recommendation": "Could not detect professional's name. Please type the exact name from the list."}
+
+    await sessions_collection.update_one(
+        {"chat_id": chat_id}, {"$set": {"selected_professional": selected}}, upsert=True
+    )
     r.hset(f"session:{chat_id}", mapping={"selected_professional": selected["name"]})
     r.expire(f"session:{chat_id}", SESSION_TTL)
 
     return {
-        "recommendation": f"✅ {selected['name']} selected ({selected['profession']}). Please provide your name, age, contact number, and email."
+        "recommendation": f"✅ {selected['name']} selected ({selected['type']}). Please provide your name, age, contact number, and email."
     }
 
 # --------------------------
@@ -135,13 +157,10 @@ async def select_professional(chat_id: str, name: str, token: str):
 # --------------------------
 @mcp.tool()
 async def collect_user_info(chat_id: str, name: str = None, age: int = None, contact: str = None, email: str = None, token: str = None):
-    """Collect and validate user details, automatically use stored data if missing"""
+    """Collect and validate user details"""
     check_auth(token)
-
-    # Pull stored session data
     session_cache = r.hgetall(f"session:{chat_id}") or {}
 
-    # Use stored values if any field is None
     name = name or session_cache.get("customer_name")
     age = age or session_cache.get("age")
     contact = contact or session_cache.get("contact")
@@ -156,23 +175,23 @@ async def collect_user_info(chat_id: str, name: str = None, age: int = None, con
     if missing:
         return {"status": "incomplete", "recommendation": f"Please provide missing fields: {', '.join(missing)}."}
 
-    # Save to MongoDB and Redis
-    await sessions_collection.update_one({"chat_id": chat_id},
-        {"$set": {"customer_name": name, "age": age, "contact": contact, "email": email}}, upsert=True)
+    await sessions_collection.update_one(
+        {"chat_id": chat_id},
+        {"$set": {"customer_name": name, "age": age, "contact": contact, "email": email}}, upsert=True
+    )
     r.hset(f"session:{chat_id}", mapping={"customer_name": name, "age": age, "contact": contact, "email": email})
-    r.expire(f"session:{chat_id}", 3600)
+    r.expire(f"session:{chat_id}", SESSION_TTL)
 
     return {"status": "complete", "recommendation": f"User info recorded for {name} ({age} yrs, {email}). Proceed to check availability."}
 
 # --------------------------
-# 5. Availability Checker Tool
+# 5. Check Availability Tool
 # --------------------------
 @mcp.tool()
-async def check_availability(chat_id: str, booking_date: str = None, booking_time: str = None, token: str = None):
-    """Check if selected professional is available, suggest next available slot if not"""
+async def check_availability(chat_id: str, user_message: str, token: str = None):
+    """Check professional availability and create booking"""
     check_auth(token)
 
-    # Pull session data
     session_cache = r.hgetall(f"session:{chat_id}") or {}
     selected_name = session_cache.get("selected_professional")
     customer_name = session_cache.get("customer_name")
@@ -187,7 +206,12 @@ async def check_availability(chat_id: str, booking_date: str = None, booking_tim
     if not prof:
         return {"status": "unavailable", "recommendation": f"{selected_name} not found."}
 
-    # Ensure booking info is provided
+    # Extract date and time from sentence
+    date_match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", user_message)
+    time_match = re.search(r"\b(\d{2}:\d{2})\b", user_message)
+    booking_date = date_match.group(1) if date_match else None
+    booking_time = time_match.group(1) if time_match else None
+
     if not booking_date or not booking_time:
         return {"status": "unavailable", "recommendation": "Please provide date (YYYY-MM-DD) and time (HH:MM)."}
 
@@ -195,16 +219,13 @@ async def check_availability(chat_id: str, booking_date: str = None, booking_tim
     weekday = dt.strftime("%A")
 
     # Check availability
-    if weekday not in prof["availability"]:
-        # Suggest next available day
-        from datetime import timedelta
-
+    if weekday not in prof["working_days"]:
         weekdays_map = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         current_index = weekdays_map.index(weekday)
         for i in range(1, 8):
             next_day_index = (current_index + i) % 7
             next_day = weekdays_map[next_day_index]
-            if next_day in prof["availability"]:
+            if next_day in prof["working_days"]:
                 next_date = dt + timedelta(days=i)
                 suggested_date = next_date.strftime("%Y-%m-%d")
                 suggested_time = prof.get("default_time", "10:00")
@@ -215,7 +236,7 @@ async def check_availability(chat_id: str, booking_date: str = None, booking_tim
                 }
         return {"status": "unavailable", "recommendation": f"{selected_name} not available any day this week."}
 
-    # Check for conflict
+    # Check conflicts
     conflict = await bookings_collection.find_one({
         "professional_name": selected_name,
         "booking_date": booking_date,
@@ -240,6 +261,6 @@ async def check_availability(chat_id: str, booking_date: str = None, booking_tim
     })
 
     r.hset(f"session:{chat_id}", mapping={"status": "complete", "booking_id": booking_id})
-    r.expire(f"session:{chat_id}", 3600)
+    r.expire(f"session:{chat_id}", SESSION_TTL)
 
     return {"status": "confirmed", "recommendation": f"✅ Booking confirmed with {selected_name} on {booking_date} at {booking_time}."}
