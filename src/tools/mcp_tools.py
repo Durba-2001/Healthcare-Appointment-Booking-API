@@ -256,7 +256,7 @@ async def check_availability(chat_id: str, user_message: str, token: str = None)
     # Get session info from Redis
     session_cache = r.hgetall(f"session:{chat_id}") or {}
     selected_name = session_cache.get("selected_professional")
-    service_type = session_cache.get("service_type", "General Practitioner")
+    service_type = session_cache.get("service_type")
     customer_name = session_cache.get("customer_name")
     age = session_cache.get("age")
     contact = session_cache.get("contact")
