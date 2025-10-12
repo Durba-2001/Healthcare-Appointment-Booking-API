@@ -1,8 +1,8 @@
 # endpoints/chat_router.py
 from fastapi import APIRouter, BackgroundTasks
-from pydantic import BaseModel
+from src.models.chat_schema import ChatMessage
 from uuid import uuid4
-from datetime import datetime, timezone
+from datetime import datetime
 import json
 from redis import Redis
 from pymongo import MongoClient
@@ -16,7 +16,7 @@ from src.tools.mcp_tools import (
     collect_user_info,
     check_availability
 )
-
+from src.utils.background_task import save_message
 router = APIRouter()
 
 # --------------------------
@@ -29,32 +29,21 @@ sessions_collection = db["booking_sessions"]
 chats_collection = db["chats"]
 
 # --------------------------
-# Pydantic Models
-# --------------------------
-class ChatMessage(BaseModel):
-    message: str
-
-# --------------------------
-# Background Task
-# --------------------------
-def save_message(chat_id: str, role: str, content: str):
-    """Persist messages to MongoDB Chats collection"""
-    chats_collection.update_one(
-        {"chat_id": chat_id},
-        {"$push": {"messages": {"role": role, "content": content, "timestamp": datetime.now(timezone.utc)}}},
-        upsert=True
-    )
-
-# --------------------------
 # Safe Redis Write Helper
 # --------------------------
 def safe_hset(redis_conn, key, mapping):
     """Safely store mapping in Redis without None values."""
     if not mapping:
         return
-    clean = {k: v for k, v in mapping.items() if v is not None}
+
+    clean = {}
+    for k, v in mapping.items():
+        if v is not None:
+            clean[k] = v
+
     if clean:
         redis_conn.hset(key, mapping=clean)
+
 
 # --------------------------
 # Helper Functions

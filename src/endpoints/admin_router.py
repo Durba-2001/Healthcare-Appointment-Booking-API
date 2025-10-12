@@ -1,5 +1,5 @@
 from fastapi import APIRouter, UploadFile, HTTPException, Depends
-from pydantic import BaseModel
+from src.models.admin_schema import PDFUploadResponse, PDFDeleteResponse
 from src.utils.config import ACCESS_TOKEN
 from src.utils.qdrant import (
     add_pdf_to_qdrant,
@@ -9,15 +9,7 @@ from src.utils.qdrant import (
 
 router = APIRouter()
 
-# --------------------------
-# Pydantic Models
-# --------------------------
-class PDFUploadResponse(BaseModel):
-    status: str
-    doc_id: str
 
-class PDFDeleteResponse(BaseModel):
-    status: str
 
 # --------------------------
 # Dependency for token auth
