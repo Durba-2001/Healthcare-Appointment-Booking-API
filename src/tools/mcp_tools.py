@@ -73,7 +73,17 @@ async def recommend_service(chat_id: str, user_message: str, token: str):
         limit=5
     )
 
-    docs_text = "\n".join([hit.payload.get("text_preview", "") if hit.payload else "" for hit in result])
+    docs_text_list = []
+
+    for hit in result:
+        if hit.payload:
+            text_preview = hit.payload.get("text_preview", "")
+            docs_text_list.append(text_preview)
+        else:
+            docs_text_list.append("")
+
+    docs_text = "\n".join(docs_text_list)
+
 
     # -------------------------
     # 3️⃣ Generate recommendation using Gemini LLM
@@ -167,8 +177,9 @@ async def list_professionals(chat_id: str, user_message: str, token: str):
 # --------------------------
 @mcp.tool()
 async def select_professional(chat_id: str, user_message: str, token: str):
-    """Select a professional using free text input"""
+    """Select a professional using free text input and store service type"""
     check_auth(token)
+    
     session = await sessions_collection.find_one({"chat_id": chat_id}, {"professionals": 1})
     if not session or not session.get("professionals"):
         return {"recommendation": "No professionals available. Please list them first."}
@@ -180,14 +191,26 @@ async def select_professional(chat_id: str, user_message: str, token: str):
     if not selected:
         return {"recommendation": "Could not detect professional's name. Please type the exact name from the list."}
 
+    # Extract service type
+    service_type = selected.get("type", "General Practitioner")
+
+    # Save selected professional and service type in MongoDB
     await sessions_collection.update_one(
-        {"chat_id": chat_id}, {"$set": {"selected_professional": selected}}, upsert=True
+        {"chat_id": chat_id},
+        {"$set": {"selected_professional": selected, "service_type": service_type}},
+        upsert=True
     )
-    r.hset(f"session:{chat_id}", mapping={"selected_professional": selected["name"]})
+
+    # Save in Redis
+    r.hset(
+        f"session:{chat_id}",
+        mapping={"selected_professional": selected["name"], "service_type": service_type}
+    )
     r.expire(f"session:{chat_id}", SESSION_TTL)
 
     return {
-        "recommendation": f"✅ {selected['name']} selected ({selected['type']}). Please provide your name, age, contact number, and email."
+        "recommendation": f"✅ {selected['name']} ({service_type}) selected. "
+                          f"Please provide your name, age, contact number, and email."
     }
 
 # --------------------------
@@ -227,11 +250,13 @@ async def collect_user_info(chat_id: str, name: str = None, age: int = None, con
 # --------------------------
 @mcp.tool()
 async def check_availability(chat_id: str, user_message: str, token: str = None):
-    """Check professional availability and create booking"""
+    """Check professional availability and create booking with service type from session"""
     check_auth(token)
 
+    # Get session info from Redis
     session_cache = r.hgetall(f"session:{chat_id}") or {}
     selected_name = session_cache.get("selected_professional")
+    service_type = session_cache.get("service_type", "General Practitioner")
     customer_name = session_cache.get("customer_name")
     age = session_cache.get("age")
     contact = session_cache.get("contact")
@@ -244,7 +269,7 @@ async def check_availability(chat_id: str, user_message: str, token: str = None)
     if not prof:
         return {"status": "unavailable", "recommendation": f"{selected_name} not found."}
 
-    # Extract date and time from sentence
+    # Extract date and time from user message
     date_match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", user_message)
     time_match = re.search(r"\b(\d{2}:\d{2})\b", user_message)
     booking_date = date_match.group(1) if date_match else None
@@ -256,7 +281,7 @@ async def check_availability(chat_id: str, user_message: str, token: str = None)
     dt = datetime.strptime(f"{booking_date} {booking_time}", "%Y-%m-%d %H:%M")
     weekday = dt.strftime("%A")
 
-    # Check availability
+    # Check professional availability
     if weekday not in prof["working_days"]:
         weekdays_map = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         current_index = weekdays_map.index(weekday)
@@ -274,7 +299,7 @@ async def check_availability(chat_id: str, user_message: str, token: str = None)
                 }
         return {"status": "unavailable", "recommendation": f"{selected_name} not available any day this week."}
 
-    # Check conflicts
+    # Check for booking conflicts
     conflict = await bookings_collection.find_one({
         "professional_name": selected_name,
         "booking_date": booking_date,
@@ -283,12 +308,13 @@ async def check_availability(chat_id: str, user_message: str, token: str = None)
     if conflict:
         return {"status": "unavailable", "recommendation": f"{selected_name} already booked at that time."}
 
-    # Save booking
+    # Save booking with service type
     booking_id = str(uuid4())
     await bookings_collection.insert_one({
         "booking_id": booking_id,
         "chat_id": chat_id,
         "professional_name": selected_name,
+        "service_type": service_type,  # <-- use service_type from Redis
         "customer_name": customer_name,
         "age": age,
         "contact": contact,
@@ -298,7 +324,11 @@ async def check_availability(chat_id: str, user_message: str, token: str = None)
         "status": "confirmed"
     })
 
+    # Update session
     r.hset(f"session:{chat_id}", mapping={"status": "complete", "booking_id": booking_id})
     r.expire(f"session:{chat_id}", SESSION_TTL)
 
-    return {"status": "confirmed", "recommendation": f"✅ Booking confirmed with {selected_name} on {booking_date} at {booking_time}."}
+    return {
+        "status": "confirmed",
+        "recommendation": f"✅ Booking confirmed with {selected_name} ({service_type}) on {booking_date} at {booking_time}."
+    }
