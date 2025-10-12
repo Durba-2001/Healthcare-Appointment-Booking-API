@@ -1,11 +1,9 @@
 from fastapi import APIRouter, UploadFile, HTTPException, Depends
 from pydantic import BaseModel
-from config import ACCESS_TOKEN
-from qdrant import (
+from src.utils.config import ACCESS_TOKEN
+from src.utils.qdrant import (
     add_pdf_to_qdrant,
     delete_pdf_from_qdrant,
-    COLLECTION_NAME,
-    qdrant,
     ensure_collection,
 )
 

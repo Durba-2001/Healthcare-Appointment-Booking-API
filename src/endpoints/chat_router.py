@@ -8,8 +8,8 @@ from redis import Redis
 from pymongo import MongoClient
 from loguru import logger
 from fastapi.concurrency import run_in_threadpool
-from config import ACCESS_TOKEN, REDIS_HOST, REDIS_PORT, REDIS_PASSWORD, MONGODB_URI
-from mcp_tools import (
+from src.utils.config import ACCESS_TOKEN, REDIS_HOST, REDIS_PORT, REDIS_PASSWORD, MONGODB_URI
+from src.tools.mcp_tools import (
     recommend_service,
     list_professionals,
     select_professional,

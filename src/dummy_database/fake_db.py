@@ -3,7 +3,7 @@ from pymongo import AsyncMongoClient
 import asyncio
 import random
 from loguru import logger
-from config import MONGODB_URI
+from utils.config import MONGODB_URI
 
 # --------------------------
 # Sample Professionals 

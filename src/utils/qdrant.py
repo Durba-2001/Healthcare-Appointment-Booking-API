@@ -3,8 +3,7 @@ import fitz  # PyMuPDF
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
-from qdrant_client.http.exceptions import UnexpectedResponse
-from config import QDRANT_URL, QDRANT_API_KEY, GOOGLE_API_KEY
+from src.utils.config import QDRANT_URL, QDRANT_API_KEY, GOOGLE_API_KEY
 
 # ------------------------------
 # Initialize embeddings model

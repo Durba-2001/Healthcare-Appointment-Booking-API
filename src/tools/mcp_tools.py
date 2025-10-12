@@ -4,13 +4,13 @@ from uuid import uuid4
 from loguru import logger
 from langchain_google_genai import ChatGoogleGenerativeAI
 import redis
-from config import ACCESS_TOKEN, GOOGLE_API_KEY, MONGODB_URI, REDIS_HOST, REDIS_PASSWORD, REDIS_PORT
+from src.utils.config import ACCESS_TOKEN, GOOGLE_API_KEY, MONGODB_URI, REDIS_HOST, REDIS_PASSWORD, REDIS_PORT
 from pymongo import AsyncMongoClient
 from datetime import datetime, timedelta, timezone
 import re
 from qdrant_client import QdrantClient
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from config import QDRANT_URL, QDRANT_API_KEY
+from src.utils.config import QDRANT_URL, QDRANT_API_KEY
 
 # Initialize Qdrant and Embeddings (singleton at module level)
 qdrant_client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
