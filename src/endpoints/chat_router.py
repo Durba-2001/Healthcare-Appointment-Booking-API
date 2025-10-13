@@ -162,9 +162,18 @@ async def continue_chat(chat_id: str, payload: ChatMessage, background_tasks: Ba
                 "token": ACCESS_TOKEN
             })
 
-            response_text = extract_recommendation(tool_response)
-            status = tool_response.get("status") if isinstance(tool_response, dict) else None
-            booking_id = tool_response.get("booking_id") if isinstance(tool_response, dict) else None
+            structured = getattr(tool_response, "structured_content", None)
+            if structured:
+                status = structured.get("status")
+                booking_id = structured.get("booking_id")
+                response_text = structured.get("recommendation")
+            else:
+                status = None
+                booking_id = None
+                response_text = str(tool_response)
+
+            logger.info(f"[Continue Chat] Availability tool response: {structured}")
+            logger.info(f"Booking status: {status}, ID: {booking_id}")
 
             if status == "confirmed":
                 next_stage = "complete"

@@ -129,7 +129,7 @@ async def list_professionals(chat_id: str, user_message: str, token: str):
     check_auth(token)
 
     context = r.hgetall(f"session:{chat_id}") or {}
-    recommendation = context.get("recommendation", "General Practitioner")
+    recommendation = context.get("recommendation")
 
     # Extract service type from recommendation
     match = re.search(r"(Cardiologist|Dermatologist|Dentist|Neurologist)", recommendation, re.IGNORECASE)
@@ -192,7 +192,7 @@ async def select_professional(chat_id: str, user_message: str, token: str):
         return {"recommendation": "Could not detect professional's name. Please type the exact name from the list."}
 
     # Extract service type
-    service_type = selected.get("type", "General Practitioner")
+    service_type = selected.get("type")
 
     # Save selected professional and service type in MongoDB
     await sessions_collection.update_one(
