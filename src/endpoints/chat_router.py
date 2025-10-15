@@ -1,5 +1,5 @@
 # endpoints/chat_router.py
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from src.models.chat_schema import ChatMessage
 from uuid import uuid4
 from redis import Redis
@@ -14,7 +14,7 @@ from src.tools.mcp_tools import (
     collect_user_info,
     check_availability
 )
-from src.utils.background_task import save_message
+from src.utils.background_task import save_message, update_session_background
 from src.utils.helper_func import (
     run_tool,
     convert_tool_response,
@@ -22,6 +22,7 @@ from src.utils.helper_func import (
     extract_user_info_from_text,
     extract_booking_info_from_text
 )
+
 router = APIRouter()
 
 # --------------------------
@@ -33,7 +34,6 @@ db = mongo_client["healthcare_app"]
 sessions_collection = db["booking_sessions"]
 booking_collection = db["bookings"]
 
-
 # --------------------------
 # Safe Redis Write Helper
 # --------------------------
@@ -42,11 +42,7 @@ def safe_hset(redis_conn, key, mapping):
     if not mapping:
         return
 
-    clean = {}
-    for k, v in mapping.items():
-        if v is not None:
-            clean[k] = v
-
+    clean = {k: v for k, v in mapping.items() if v is not None}
     if clean:
         redis_conn.hset(key, mapping=clean)
 
@@ -71,7 +67,8 @@ async def new_chat(payload: ChatMessage, background_tasks: BackgroundTasks):
     chat_id = str(uuid4())
 
     safe_hset(r, f"session:{chat_id}", {"stage": "recommendation"})
-    sessions_collection.insert_one({"chat_id": chat_id, "stage": "recommendation", "messages": [user_message]})
+    # Initial insert in MongoDB as background
+    background_tasks.add_task(update_session_background, chat_id, {"stage": "recommendation", "message": [user_message]})
 
     try:
         processed_input = preprocess_user_input("recommendation", user_message)
@@ -84,13 +81,12 @@ async def new_chat(payload: ChatMessage, background_tasks: BackgroundTasks):
 
         tool_response_dict = convert_tool_response(tool_response)
         response_text = extract_recommendation(tool_response_dict)
-
         next_stage = "awaiting_city"
+
+        # Update Redis and MongoDB in background
         safe_hset(r, f"session:{chat_id}", {"stage": next_stage, "recommendation": response_text})
-        sessions_collection.update_one(
-            {"chat_id": chat_id},
-            {"$set": {"stage": next_stage, "recommendation": response_text}}
-        )
+        background_tasks.add_task(update_session_background, chat_id, {"stage": next_stage, "recommendation": response_text })
+
     except Exception as e:
         logger.exception(f"[New Chat] Error chat_id={chat_id}: {e}")
         response_text = "⚠️ Something went wrong. Please try again."
@@ -161,23 +157,24 @@ async def continue_chat(chat_id: str, payload: ChatMessage, background_tasks: Ba
                 "user_message": date_time_str.strip(),
                 "token": ACCESS_TOKEN
             })
-
             structured = getattr(tool_response, "structured_content", None)
             if structured:
                 status = structured.get("status")
-                booking_id = structured.get("booking_id")
                 response_text = structured.get("recommendation")
             else:
                 status = None
-                booking_id = None
                 response_text = str(tool_response)
 
-            logger.info(f"[Continue Chat] Availability tool response: {structured}")
-            logger.info(f"Booking status: {status}, ID: {booking_id}")
-
+            logger.info(f"[Continue Chat] Booking status: {status}")
             if status == "confirmed":
                 next_stage = "complete"
                 r.delete(f"session:{chat_id}")
+                # Final session update as background
+                background_tasks.add_task(update_session_background, chat_id, {
+                    "stage": next_stage,
+                    "status": status,
+                   
+                })
 
                 background_tasks.add_task(save_message, chat_id, "user", user_message)
                 background_tasks.add_task(save_message, chat_id, "assistant", response_text)
@@ -186,7 +183,7 @@ async def continue_chat(chat_id: str, payload: ChatMessage, background_tasks: Ba
                     "chat_id": chat_id,
                     "response": response_text,
                     "status": status,
-                    "booking_id": booking_id
+                    
                 }
             else:
                 next_stage = "awaiting_availability"
@@ -198,11 +195,7 @@ async def continue_chat(chat_id: str, payload: ChatMessage, background_tasks: Ba
 
         if next_stage != "complete":
             safe_hset(r, f"session:{chat_id}", {"stage": next_stage})
-            sessions_collection.update_one(
-                {"chat_id": chat_id},
-                {"$set": {"stage": next_stage}},
-                upsert=True
-            )
+            background_tasks.add_task(update_session_background, chat_id, {"stage": next_stage})
 
     except Exception as e:
         logger.exception(f"[Continue Chat] Error chat_id={chat_id}, stage={stage}: {e}")
@@ -236,23 +229,14 @@ async def get_booking_info(chat_id: str):
         "status": booking_data.get("status")
     }
 
-    return {
-        "status": "success",
-        "chat_id": chat_id,
-        "booking_info": booking_info
-    }
+    return {"status": "success", "chat_id": chat_id, "booking_info": booking_info}
 
-from fastapi import HTTPException
-
+# --------------------------
+# Delete Booking Info by Chat ID
+# --------------------------
 @router.delete("/booking-info/{chat_id}")
 async def delete_booking_info(chat_id: str):
     result = booking_collection.delete_one({"chat_id": chat_id})
-    
     if result.deleted_count == 0:
-        # No document found with this chat_id
         raise HTTPException(status_code=404, detail="Chat ID not found.")
-    
-    return {
-        "status": "success",
-        "message": f"Booking with chat_id '{chat_id}' has been deleted."
-    }
+    return {"status": "success", "message": f"Booking with chat_id '{chat_id}' has been deleted."}

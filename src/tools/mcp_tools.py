@@ -8,7 +8,7 @@ from src.utils.config import ACCESS_TOKEN, GOOGLE_API_KEY, MONGODB_URI, REDIS_HO
 from pymongo import AsyncMongoClient
 from datetime import datetime, timedelta, timezone
 import re
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient,models
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from src.utils.config import QDRANT_URL, QDRANT_API_KEY
 
@@ -134,7 +134,7 @@ async def list_professionals(chat_id: str, user_message: str, token: str):
     # Extract service type from recommendation
     match = re.search(r"(Cardiologist|Dermatologist|Dentist|Neurologist)", recommendation, re.IGNORECASE)
     service_type = match.group(1) if match else "General Practitioner"
-
+    logger.info(f"Detected service type: {service_type}")
     # Extract city from user message
     valid_cities = ["Kolkata", "Pune", "Bangalore", "Delhi"]
     city_match = next((c for c in valid_cities if re.search(fr"\b{c}\b", user_message, re.IGNORECASE)), None)
