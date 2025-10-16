@@ -95,7 +95,7 @@ def extract_user_info_from_text(text: str):
         info["contact"] = contact_match.group(0)
 
     # Email: simple pattern
-    email_match = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", text)
+    email_match = re.search(r"\w+@\w+\.\w+", text)
     if email_match:
         info["email"] = email_match.group(0)
 
@@ -134,3 +134,36 @@ def extract_booking_info_from_text(text: str):
             pass
 
     return booking
+
+
+# --------------------------
+# Safe Redis Write Helper
+# --------------------------
+def safe_hset(redis_conn, key, mapping):
+    """Safely store mapping in Redis without None values."""
+    if not mapping:
+        return
+    # Create an empty dictionary to store only non-None values
+    clean = {}
+
+# Loop through all key–value pairs in mapping
+    for k, v in mapping.items():
+    # Add the pair only if the value is not None
+        if v is not None:
+            clean[k] = v
+
+# If there is at least one valid item, save it to Redis
+    if clean:
+        redis_conn.hset(key, mapping=clean)
+
+# --------------------------
+# Stage-aware input processing
+# --------------------------
+def preprocess_user_input(stage: str, user_message: str):
+    """Preprocess input depending on conversation stage."""
+    if stage == "awaiting_user_info":
+        return extract_user_info_from_text(user_message)
+    elif stage == "awaiting_availability":
+        return extract_booking_info_from_text(user_message)
+    else:
+        return user_message.strip()
