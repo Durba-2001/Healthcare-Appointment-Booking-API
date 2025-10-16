@@ -1,6 +1,5 @@
-from fastapi import APIRouter, UploadFile, HTTPException, Depends
+from fastapi import APIRouter, UploadFile
 from src.models.admin_schema import PDFUploadResponse, PDFDeleteResponse
-from src.utils.config import ACCESS_TOKEN
 from src.utils.qdrant import (
     add_pdf_to_qdrant,
     delete_pdf_from_qdrant,
@@ -8,16 +7,6 @@ from src.utils.qdrant import (
 )
 
 router = APIRouter()
-
-
-
-# --------------------------
-# Dependency for token auth
-# --------------------------
-def verify_token(token: str):
-    if token != ACCESS_TOKEN:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    return True
 
 # --------------------------
 # Add PDF
@@ -37,9 +26,6 @@ async def upload_pdf(file: UploadFile):
 # Delete PDF
 # --------------------------
 @router.delete("/delete-doc/{doc_id}", response_model=PDFDeleteResponse)
-async def delete_doc(
-    doc_id: str,
-    authorized: bool = Depends(lambda: verify_token(ACCESS_TOKEN))
-):
+async def delete_doc(doc_id: str):
     await delete_pdf_from_qdrant(doc_id)
     return PDFDeleteResponse(status="success")
