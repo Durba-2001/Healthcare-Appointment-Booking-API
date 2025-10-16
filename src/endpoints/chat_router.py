@@ -41,8 +41,16 @@ def safe_hset(redis_conn, key, mapping):
     """Safely store mapping in Redis without None values."""
     if not mapping:
         return
+    # Create an empty dictionary to store only non-None values
+    clean = {}
 
-    clean = {k: v for k, v in mapping.items() if v is not None}
+# Loop through all key–value pairs in mapping
+    for k, v in mapping.items():
+    # Add the pair only if the value is not None
+        if v is not None:
+            clean[k] = v
+
+# If there is at least one valid item, save it to Redis
     if clean:
         redis_conn.hset(key, mapping=clean)
 
@@ -67,8 +75,12 @@ async def new_chat(payload: ChatMessage, background_tasks: BackgroundTasks):
     chat_id = str(uuid4())
 
     safe_hset(r, f"session:{chat_id}", {"stage": "recommendation"})
-    # Initial insert in MongoDB as background
-    background_tasks.add_task(update_session_background, chat_id, {"stage": "recommendation", "message": [user_message]})
+
+    # Initial Mongo insert as background
+    background_tasks.add_task(update_session_background, chat_id, {
+        "stage": "recommendation",
+        "messages": [{"role": "user", "content": user_message}]
+    })
 
     try:
         processed_input = preprocess_user_input("recommendation", user_message)
@@ -83,14 +95,21 @@ async def new_chat(payload: ChatMessage, background_tasks: BackgroundTasks):
         response_text = extract_recommendation(tool_response_dict)
         next_stage = "awaiting_city"
 
-        # Update Redis and MongoDB in background
-        safe_hset(r, f"session:{chat_id}", {"stage": next_stage, "recommendation": response_text})
-        background_tasks.add_task(update_session_background, chat_id, {"stage": next_stage, "recommendation": response_text })
+        # Update Redis + background Mongo
+        safe_hset(r, f"session:{chat_id}", {
+            "stage": next_stage,
+            "recommendation": response_text
+        })
+        background_tasks.add_task(update_session_background, chat_id, {
+            "stage": next_stage,
+            "recommendation": response_text
+        })
 
     except Exception as e:
         logger.exception(f"[New Chat] Error chat_id={chat_id}: {e}")
         response_text = "⚠️ Something went wrong. Please try again."
 
+    # Save both messages asynchronously
     background_tasks.add_task(save_message, chat_id, "user", user_message)
     background_tasks.add_task(save_message, chat_id, "assistant", response_text)
 
@@ -151,13 +170,14 @@ async def continue_chat(chat_id: str, payload: ChatMessage, background_tasks: Ba
 
         elif stage == "awaiting_availability":
             booking_info = processed_input if isinstance(processed_input, dict) else {}
-            date_time_str = f"{booking_info.get('booking_date','')} {booking_info.get('booking_time','')}"
+            date_time_str = f"{booking_info.get('booking_date','')} {booking_info.get('booking_time','')}".strip()
             tool_response = await run_tool(check_availability, {
                 "chat_id": chat_id,
-                "user_message": date_time_str.strip(),
+                "user_message": date_time_str,
                 "token": ACCESS_TOKEN
             })
             structured = getattr(tool_response, "structured_content", None)
+
             if structured:
                 status = structured.get("status")
                 response_text = structured.get("recommendation")
@@ -166,25 +186,18 @@ async def continue_chat(chat_id: str, payload: ChatMessage, background_tasks: Ba
                 response_text = str(tool_response)
 
             logger.info(f"[Continue Chat] Booking status: {status}")
+
             if status == "confirmed":
                 next_stage = "complete"
                 r.delete(f"session:{chat_id}")
-                # Final session update as background
                 background_tasks.add_task(update_session_background, chat_id, {
                     "stage": next_stage,
-                    "status": status,
-                   
+                    "status": status
                 })
-
                 background_tasks.add_task(save_message, chat_id, "user", user_message)
                 background_tasks.add_task(save_message, chat_id, "assistant", response_text)
+                return {"chat_id": chat_id, "response": response_text, "status": status}
 
-                return {
-                    "chat_id": chat_id,
-                    "response": response_text,
-                    "status": status,
-                    
-                }
             else:
                 next_stage = "awaiting_availability"
 
@@ -193,6 +206,7 @@ async def continue_chat(chat_id: str, payload: ChatMessage, background_tasks: Ba
             next_stage = "complete"
             r.delete(f"session:{chat_id}")
 
+        # Final Redis + Mongo update (background)
         if next_stage != "complete":
             safe_hset(r, f"session:{chat_id}", {"stage": next_stage})
             background_tasks.add_task(update_session_background, chat_id, {"stage": next_stage})
@@ -205,6 +219,8 @@ async def continue_chat(chat_id: str, payload: ChatMessage, background_tasks: Ba
     background_tasks.add_task(save_message, chat_id, "assistant", response_text)
 
     return {"chat_id": chat_id, "response": response_text, "status": "in_progress"}
+
+
 
 # --------------------------
 # Get Booking Info by Chat ID

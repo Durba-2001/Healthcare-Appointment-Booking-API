@@ -11,7 +11,7 @@ import re
 from qdrant_client import QdrantClient,models
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from src.utils.config import QDRANT_URL, QDRANT_API_KEY
-
+import json
 # Initialize Qdrant and Embeddings (singleton at module level)
 qdrant_client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
 embedding_model = GoogleGenerativeAIEmbeddings(model="gemini-embedding-001", api_key=GOOGLE_API_KEY)
@@ -94,11 +94,11 @@ A user says: "{user_message}" describing the health issue they are facing.
 You have access to descriptions of available healthcare services (uploaded by admin as PDFs) as context below:
 {docs_text}
 
-Based on this context, recommend the most appropriate healthcare service for the user 
-(e.g., Cardiologist, Dermatologist, Dentist, Neurologist). Keep your response concise and clear.
+Based on this context, recommend the most appropriate healthcare service for the user like Cardiologist, Dermatologist, Dentist, Neurologist.
+dont use department.
+Keep your response concise and clear.
 
-After recommending the service type, ask the user for their city 
-(e.g., Kolkata, Pune, Bangalore, Delhi) so that suitable professionals can be suggested.
+After recommending the service type, ask the user for their city like Kolkata, Pune, Bangalore, Delhi so that suitable professionals can be suggested.
 """
 
     response = await llm.ainvoke(prompt)
@@ -129,48 +129,78 @@ async def list_professionals(chat_id: str, user_message: str, token: str):
     check_auth(token)
 
     context = r.hgetall(f"session:{chat_id}") or {}
-    recommendation = context.get("recommendation")
+    recommendation = context.get("recommendation", "")
 
     # Extract service type from recommendation
     match = re.search(r"(Cardiologist|Dermatologist|Dentist|Neurologist)", recommendation, re.IGNORECASE)
     service_type = match.group(1) if match else "General Practitioner"
     logger.info(f"Detected service type: {service_type}")
+
     # Extract city from user message
     valid_cities = ["Kolkata", "Pune", "Bangalore", "Delhi"]
     city_match = next((c for c in valid_cities if re.search(fr"\b{c}\b", user_message, re.IGNORECASE)), None)
-    if not city_match:
-        return {"recommendation": f"Could not detect city. Please mention one of {', '.join(valid_cities)}."}
-    city = city_match
 
-    # Check Redis cache
+    if not city_match:
+        return {
+            "recommendation": f"Could not detect city. Please mention one of {', '.join(valid_cities)}."
+        }
+
+    city = city_match
     cache_key = f"professionals:{city}:{service_type}"
+    professionals = None  # initialize to avoid scope errors
+
+    # --- Try cache first ---
     if r.exists(cache_key):
-        professionals = eval(r.get(cache_key))
-        logger.info(f"Using cached list for {city} ({service_type})")
-    else:
+        cached_data = r.get(cache_key)
+        if cached_data:
+            professionals = json.loads(cached_data)
+            logger.info(f"Using cached list for {city} ({service_type})")
+
+    # --- If cache miss, query MongoDB ---
+    if not professionals:
+        logger.info(f"Cache miss — fetching {service_type}s from MongoDB for {city}")
         cursor = professionals_collection.find(
-            {"city": {"$regex": f"^{city}$", "$options": "i"},
-             "type": {"$regex": f"{service_type}", "$options": "i"}},
+            {
+                "city": {"$regex": f"^{city}$", "$options": "i"},
+                "type": {"$regex": f"{service_type}", "$options": "i"},
+            },
             {"_id": 0}
         )
         professionals = await cursor.to_list(length=None)
-        r.set(cache_key, str(professionals), ex=PROF_LIST_TTL)
 
+        # Cache the result if we found any
+        if professionals:
+            r.set(cache_key, json.dumps(professionals), ex=PROF_LIST_TTL)
+            logger.info(f"Cached professionals for {city} ({service_type})")
+
+    # --- Handle no results ---
     if not professionals:
         return {"recommendation": f"No {service_type}s found in {city}."}
 
+    # --- Format output ---
     formatted = "\n".join(
-        f"- {p['name']} ({p['certification']}) — Available: {', '.join(p['working_days'])} - Year of experience: {p['years_experience']} - Rating: {p['rating']}"
+        f"- {p['name']} ({p.get('certification', 'N/A')}) — "
+        f"Available: {', '.join(p.get('working_days', []))} — "
+        f"Experience: {p.get('years_experience', 'N/A')} years — "
+        f"Rating: {p.get('rating', 'N/A')}"
         for p in professionals
     )
 
+    # --- Save in session ---
     await sessions_collection.update_one(
-        {"chat_id": chat_id}, {"$set": {"professionals": professionals}}, upsert=True
+        {"chat_id": chat_id},
+        {"$set": {"professionals": professionals}},
+        upsert=True,
     )
-    
+
     return {
-        "recommendation": f"Here are the {service_type}s in {city}:\n{formatted}\n\nPlease type the professional's name to continue."
+        "recommendation": (
+            f"Here are the {service_type}s in {city}:\n"
+            f"{formatted}\n\n"
+            f"Please type the professional's name to continue."
+        )
     }
+
 
 # --------------------------
 # 3. Select Professional Tool
@@ -187,7 +217,14 @@ async def select_professional(chat_id: str, user_message: str, token: str):
     professionals = session["professionals"]
 
     # Extract professional name from message
-    selected = next((p for p in professionals if re.search(fr"\b{p['name']}\b", user_message, re.IGNORECASE)), None)
+    selected = None  # default value
+
+    for p in professionals:
+    # check if this professional's name is mentioned in user message
+        if re.search(fr"\b{p['name']}\b", user_message, re.IGNORECASE):
+            selected = p
+            break  # stop after finding the first match
+
     if not selected:
         return {"recommendation": "Could not detect professional's name. Please type the exact name from the list."}
 
@@ -230,8 +267,8 @@ async def collect_user_info(chat_id: str, name: str = None, age: int = None, con
     missing = []
     if not name: missing.append("name")
     if not age: missing.append("age")
-    if not email or not re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email): missing.append("valid email")
-    if not contact or len(re.sub(r"\D", "", contact)) < 8: missing.append("valid contact number")
+    if not email or not re.match(r"^\w+@\w+\.\w+$", email): missing.append("valid email")
+    if not contact or len(re.sub(r"\D", "", contact)) != 10: missing.append("valid contact number")
 
     if missing:
         return {"status": "incomplete", "recommendation": f"Please provide missing fields: {', '.join(missing)}."}
@@ -314,7 +351,7 @@ async def check_availability(chat_id: str, user_message: str, token: str = None)
         "booking_id": booking_id,
         "chat_id": chat_id,
         "professional_name": selected_name,
-        "service_type": service_type,  # <-- use service_type from Redis
+        "service_type": service_type,  
         "customer_name": customer_name,
         "age": age,
         "contact": contact,

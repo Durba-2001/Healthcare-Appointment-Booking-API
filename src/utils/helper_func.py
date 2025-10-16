@@ -9,7 +9,7 @@ async def run_tool(tool, params):
     """Execute a tool safely, handling async or sync"""
     try:
         if callable(getattr(tool, "run", None)):
-            if getattr(tool.run, "__code__", None) and tool.run.__code__.co_flags & 0x80:
+            if getattr(tool.run, "__code__", None) :
                 return await tool.run(params)  # async
             else:
                 return await run_in_threadpool(tool.run, params)  # sync
