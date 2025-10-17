@@ -57,7 +57,7 @@ async def new_chat(payload: ChatMessage, background_tasks: BackgroundTasks):
     })
     # Save initial chat session in MongoDB asynchronously
 
-    logger.info(f"💬 User message received: {user_message}")
+    logger.info(f" User message received: {user_message}")
     # Log the received message
 
     # Handle empty message case
@@ -104,8 +104,8 @@ async def new_chat(payload: ChatMessage, background_tasks: BackgroundTasks):
         })
         # Update MongoDB in the background
 
-        logger.info(f"💾 Session initialized in Redis for chat_id={chat_id}")
-        logger.info(f"📨 New chat response returned for chat_id={chat_id}")
+        logger.info(f" Session initialized in Redis for chat_id={chat_id}")
+        logger.info(f" New chat response returned for chat_id={chat_id}")
         # Log Redis initialization and response sent
 
     except Exception as e:
