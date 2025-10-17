@@ -7,7 +7,6 @@ from src.endpoints.admin_router import router as admin_router
 
 app = FastAPI(
     title="Healthcare Appointment Booking API",
-    version="1.0",
     description="AI-driven appointment booking using MCP tools."
 )
 
