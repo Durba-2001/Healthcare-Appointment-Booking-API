@@ -270,7 +270,7 @@ async def select_professional(chat_id: str, user_message: str, token: str):
     r.expire(f"session:{chat_id}", SESSION_TTL)
 
     return {
-        "recommendation": f"✅ {selected['name']} ({service_type}) selected. "
+        "recommendation": f" {selected['name']} ({service_type}) selected. "
                           f"Please provide your name, age, contact number, and email."
     }
 
@@ -401,5 +401,5 @@ async def check_availability(chat_id: str, user_message: str, token: str = None)
 
     return {
         "status": "confirmed",
-        "recommendation": f"✅ Booking confirmed with {selected_name} ({service_type}) on {booking_date} at {booking_time}."
+        "recommendation": f" Booking confirmed with {selected_name} ({service_type}) on {booking_date} at {booking_time}."
     }
