@@ -1,6 +1,7 @@
-from pydantic import BaseModel
+from pydantic import BaseModel,Field
 # --------------------------
 # Pydantic Models
 # --------------------------
 class ChatMessage(BaseModel):
-    message: str
+    message: str = Field(...,min_length=1)
+    

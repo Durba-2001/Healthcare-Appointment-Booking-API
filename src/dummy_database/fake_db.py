@@ -3,7 +3,7 @@ from pymongo import AsyncMongoClient
 import asyncio
 import random
 from loguru import logger
-from utils.config import MONGODB_URI
+from src.utils.config import MONGODB_URI
 
 # --------------------------
 # Sample Professionals 
@@ -30,9 +30,9 @@ professionals = [
     {"name": "Dr. Arjun Kumar", "type": "Neurologist", "city": "Bangalore", "working_days": ["Wednesday", "Friday"], "working_hours": "10:00-16:00", "certification": "DM Neurology"},
     {"name": "Dr. Varun Mehta", "type": "Neurologist", "city": "Bangalore", "working_days": ["Tuesday", "Thursday"], "working_hours": "10:00-16:00", "certification": "DM Neurology"},
     {"name": "Dr. Kavita Sharma", "type": "Dermatologist", "city": "Delhi", "working_days": ["Monday", "Thursday"], "working_hours": "11:00-17:00", "certification": "MD Dermatology"},
-    {"name": "Dr. Aakash Singh", "type": "Orthopedic", "city": "Delhi", "working_days": ["Tuesday", "Friday"], "working_hours": "10:00-15:00", "certification": "MS Orthopedics"},
-    {"name": "Dr. Pooja Desai", "type": "Pediatrician", "city": "Kolkata", "working_days": ["Monday", "Wednesday", "Friday"], "working_hours": "09:00-14:00", "certification": "MD Pediatrics"},
-    {"name": "Dr. Nivedita Rao", "type": "Gynecologist", "city": "Bangalore", "working_days": ["Tuesday", "Thursday"], "working_hours": "10:00-16:00", "certification": "MD Gynecology"},
+    {"name": "Dr. Aakash Singh", "type": "Neurologist", "city": "Delhi", "working_days": ["Tuesday", "Friday"], "working_hours": "10:00-15:00", "certification": "MS Orthopedics"},
+    {"name": "Dr. Pooja Desai", "type": "Neurologist", "city": "Kolkata", "working_days": ["Monday", "Wednesday", "Friday"], "working_hours": "09:00-14:00", "certification": "MD Pediatrics"},
+    {"name": "Dr. Nivedita Rao", "type": "cardiologist", "city": "Bangalore", "working_days": ["Tuesday", "Thursday"], "working_hours": "10:00-16:00", "certification": "MD Gynecology"},
     {"name": "Dr. Ritesh Naik", "type": "Cardiologist", "city": "Pune", "working_days": ["Wednesday", "Friday"], "working_hours": "10:00-16:00", "certification": "MD Cardiology"},
 ]
 
@@ -55,13 +55,13 @@ async def populate():
 
     # Insert new sample data
     await collection.insert_many(professionals)
-    logger.info("✅ Inserted 25 sample professionals successfully.")
+    logger.info(" Inserted 25 sample professionals successfully.")
 
     # Create indexes
     await collection.create_index([("name", ASCENDING)])
     await collection.create_index([("city", ASCENDING)])
     await collection.create_index([("type", ASCENDING)])
-    logger.info("📚 Created indexes on 'name', 'city', and 'type'.")
+    logger.info(" Created indexes on 'name', 'city', and 'type'.")
 
     client.close()
 

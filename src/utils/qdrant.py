@@ -9,7 +9,7 @@ from src.utils.config import QDRANT_URL, QDRANT_API_KEY, GOOGLE_API_KEY
 # Initialize embeddings model
 # ------------------------------
 embedding_model = GoogleGenerativeAIEmbeddings(
-    model="gemini-embedding-001",   # ✅ Use Google Gemini embedding model (3072-dimensional vector)
+    model="gemini-embedding-001",   #  Use Google Gemini embedding model (3072-dimensional vector)
     api_key=GOOGLE_API_KEY          # Provide the Google API key for authentication
 )
 
@@ -22,7 +22,7 @@ qdrant = QdrantClient(
     timeout=60.0           # Set network timeout to 60 seconds
 )
 COLLECTION_NAME = "healthcare_docs"  # Name of the Qdrant collection where PDFs will be stored
-EMBEDDING_DIM = 3072  # ✅ Embedding dimension produced by gemini-embedding-001
+EMBEDDING_DIM = 3072  #  Embedding dimension produced by gemini-embedding-001
 
 # ------------------------------
 # Ensure Qdrant collection exists (auto-fix mismatch)
@@ -35,7 +35,7 @@ def ensure_collection():
 
         # If the dimension does not match the expected embedding dimension
         if existing_dim != EMBEDDING_DIM:
-            print(f"⚠️ Dimension mismatch: existing={existing_dim}, expected={EMBEDDING_DIM}. Recreating collection...")
+            print(f" Dimension mismatch: existing={existing_dim}, expected={EMBEDDING_DIM}. Recreating collection...")
             # Recreate the collection with correct dimension and cosine distance
             qdrant.recreate_collection(
                 collection_name=COLLECTION_NAME,
@@ -86,7 +86,7 @@ async def add_pdf_to_qdrant(content: bytes, filename: str) -> str:
                 vector=embedding,      # The embedding vector
                 payload={
                     "filename": filename,          # Store filename for reference
-                    "text_preview": text[:500]     # Store first 500 characters as preview
+                    "text_preview": text     # Store first 500 characters as preview
                 }
             )
         ],
