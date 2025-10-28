@@ -30,6 +30,9 @@ def extract_recommendation(tool_output: str) -> str:
     except Exception:
         return tool_output
 
+# ----------------------------
+# Helper to extract session update from tool output
+# ----------------------------
 def extract_session(tool_output: str) -> str:
     try:
         parsed = json.loads(tool_output)

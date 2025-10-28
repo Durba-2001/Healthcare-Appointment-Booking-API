@@ -1,13 +1,14 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException
-from src.models.chat_schema import ChatMessage
 from uuid import uuid4
 import redis
 from pymongo import MongoClient
 from loguru import logger
 import json
+import os
 
+from src.models.chat_schema import ChatMessage
 from src.utils.background_task import save_message, update_session_background
-from src.utils.helper_func import safe_hset, extract_recommendation,extract_session
+from src.utils.helper_func import  extract_recommendation, extract_session
 from src.mcp.mcp_client import MCPClient
 from src.utils.config import REDIS_HOST, REDIS_PASSWORD, REDIS_PORT, MONGODB_URI
 
@@ -15,6 +16,11 @@ from src.utils.config import REDIS_HOST, REDIS_PASSWORD, REDIS_PORT, MONGODB_URI
 # Initialize Router
 # ----------------------------
 router = APIRouter()
+
+# ----------------------------
+# Environment Configuration
+# ----------------------------
+REDIS_TTL = 3600 # default: 1 hour
 
 # ----------------------------
 # Database and Redis setup
@@ -32,6 +38,21 @@ booking_collection = db["bookings"]
 # ----------------------------
 mcp_client = MCPClient()
 
+# ----------------------------
+# Redis Helpers
+# ----------------------------
+def store_message_redis(chat_id: str, role: str, message: str, ttl: int = REDIS_TTL):
+    """
+    Append chat messages to Redis list and set TTL.
+    """
+    redis_key = f"session:{chat_id}:messages"
+    msg_entry = json.dumps({"role": role, "message": message})
+    r.rpush(redis_key, msg_entry)
+
+    # Set expiry if not already set
+    if r.ttl(redis_key) == -1:
+        r.expire(redis_key, ttl)
+
 
 # ----------------------------
 # Start a New Chat
@@ -44,23 +65,27 @@ async def new_chat(payload: ChatMessage, background_tasks: BackgroundTasks):
     if not user_message:
         return {"chat_id": chat_id, "response": "Please enter a valid message."}
 
-    # Initialize Redis session
-    safe_hset(r, f"session:{chat_id}", {"stage": "start"})
+    # Initialize Redis session (with TTL)
 
-    logger.info(f" New Chat Started | ID: {chat_id} | Message: {user_message}")
+    logger.info(f"New Chat Started | ID: {chat_id} | Message: {user_message}")
 
-    # First message → recommend_service
-    response_data = await mcp_client.process_user_message(chat_id, user_message, first_message=True)
-    print(response_data)
+    # Process message with MCP
+    response_data = await mcp_client.process_user_message(chat_id, user_message)
     tool_output = response_data.get("response", "")
     clean_response = extract_recommendation(tool_output)
+    assistant_summary = response_data.get("assistant_summary", "")
 
-    # Save messages in background
+    # Save messages (Mongo + Redis)
     background_tasks.add_task(save_message, chat_id, "user", user_message)
     background_tasks.add_task(save_message, chat_id, "assistant", clean_response)
+    store_message_redis(chat_id, "user", user_message)
+    store_message_redis(chat_id, "assistant", clean_response)
 
-    return {"chat_id": chat_id, "response": clean_response}
-
+    return {
+        "chat_id": chat_id,
+        "response": assistant_summary,
+        #"summary": clean_response,
+    }
 
 # ----------------------------
 # Continue Existing Chat
@@ -71,29 +96,36 @@ async def continue_chat(chat_id: str, payload: ChatMessage, background_tasks: Ba
     if not user_message:
         return {"chat_id": chat_id, "response": "Please enter a valid message."}
 
-    # Log and store user message
+    # Save user message (Mongo + Redis)
     background_tasks.add_task(save_message, chat_id, "user", user_message)
+    store_message_redis(chat_id, "user", user_message)
     logger.info(f"Continue Chat ({chat_id}) | Message: {user_message}")
 
-    # Process with MCP — may call tools like select_professional or collect_user_info
-    response_data = await mcp_client.process_user_message(chat_id, user_message, first_message=False)
-    print(response_data)
+    # Process with MCP
+    response_data = await mcp_client.process_user_message(chat_id, user_message)
     tool_output = response_data.get("response", "")
     clean_response = extract_recommendation(tool_output)
-    # Save assistant reply
-    background_tasks.add_task(save_message, chat_id, "assistant", clean_response)
+    assistant_summary = response_data.get("assistant_summary", "")
 
-    #  Background MongoDB session update (if MCP tool returned session_update)
+    # Save assistant message
+    background_tasks.add_task(save_message, chat_id, "assistant", clean_response)
+    store_message_redis(chat_id, "assistant", clean_response)
+
+    # Handle background session updates
     tool_used = response_data.get("tool_used", "")
     if tool_used in ["select_professional", "collect_user_info"]:
         session_update = extract_session(tool_output)
         if session_update and "chat_id" in session_update:
             background_tasks.add_task(update_session_background, session_update)
-            logger.info(f"Background task scheduled for session update | chat_id={chat_id} | tool: {tool_used}")
+            logger.info(f"Background session update scheduled | chat_id={chat_id} | tool={tool_used}")
         else:
             logger.debug(f"No valid session_update found for tool: {tool_used}")
 
-    return {"chat_id": chat_id, "response": clean_response}
+    return {
+        "chat_id": chat_id,
+        "response": assistant_summary,
+        #"summary": clean_response,
+    }
 
 # ----------------------------
 # Retrieve Booking Info
@@ -127,5 +159,9 @@ async def delete_booking_info(chat_id: str):
     result = booking_collection.delete_one({"chat_id": chat_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Chat ID not found.")
+
+    # Also delete from Redis
+    r.delete(f"session:{chat_id}")
+    r.delete(f"session:{chat_id}:messages")
 
     return {"status": "success", "message": f"Booking with chat_id '{chat_id}' deleted successfully."}
