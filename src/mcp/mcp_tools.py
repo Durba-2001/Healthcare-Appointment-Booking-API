@@ -211,67 +211,112 @@ async def collect_user_info(chat_id: str, name: str = None, age: int = None, con
 # --------------------------
 @mcp.tool()
 async def confirm_user_info(chat_id: str, user_message: str, token: str = None):
+    """
+    Confirm or update user details before proceeding to scheduling.
+    """
     check_auth(token)
-    session_cache = r.hgetall(f"session:{chat_id}")
+    session_key = f"session:{chat_id}"
+    session_cache = r.hgetall(session_key)
+
     if not session_cache:
-        return {"status": "error", "recommendation": "No user details found. Please provide your details again."}
-
-    msg = user_message.lower()
-
-    # User confirms
-    if msg in ["yes", "y", "confirm", "ok"]:
-        customer_name = session_cache.get("name", "")
         return {
-            "status": "confirmed",
-            "recommendation": f"Thank you {customer_name}! Let's proceed to schedule your appointment."
+            "status": "error",
+            "recommendation": "No user details found. Please provide your details again."
         }
 
-    # User wants to update
-    if "no" in msg:
+    msg = user_message.strip().lower()
+
+    # ---------------------------
+    # User confirms details
+    # ---------------------------
+    if msg in ["yes", "y", "confirm", "ok", "correct"]:
+        customer_name = session_cache.get("name", "User")
+        r.hset(session_key, mapping={"status": "confirmed"})
+        r.expire(session_key, SESSION_TTL)
+
+        details = "\n".join(f"- {k.capitalize()}: {v}" for k, v in session_cache.items() if k != "status")
+
+        return {
+            "status": "confirmed",
+            "recommendation": (
+                f"Thank you, {customer_name}! Your details have been confirmed:\n"
+                f"{details}\n\nLet's proceed to schedule your appointment."
+            ),
+            "customer_details": session_cache,
+            "next_tool": "check_availability"
+        }
+
+    # ---------------------------
+    # User wants to update details
+    # ---------------------------
+    if "no" in msg or "change" in msg or "update" in msg:
         updates = {}
 
         words = msg.split()
-        # Update age
-        if "age" in words:
+
+        # Extract age
+        if "age" in msg:
             for word in words:
                 if word.isdigit():
                     updates["age"] = int(word)
                     break
 
-        # Update name
-        if "name" in words:
+        # Extract name
+        if "name" in msg:
             if "is" in words:
                 idx = words.index("is") + 1
                 if idx < len(words):
                     updates["name"] = words[idx].capitalize()
 
-        # Update email
+        # Extract email
         for word in words:
-            if "@" in word:
+            if "@" in word and "." in word:
                 updates["email"] = word
                 break
 
-        # Update contact (10-digit number)
+        # Extract contact number
         for word in words:
             if word.isdigit() and len(word) == 10:
                 updates["contact"] = word
                 break
 
+        # ---------------------------
+        # Apply and show updated info
+        # ---------------------------
         if updates:
-            r.hset(f"session:{chat_id}", mapping=updates)
-            r.expire(f"session:{chat_id}", SESSION_TTL)
+            r.hset(session_key, mapping=updates)
+            r.expire(session_key, SESSION_TTL)
+            full_info = r.hgetall(session_key)
+
+            details = "\n".join(f"- {k.capitalize()}: {v}" for k, v in full_info.items() if k != "status")
+            customer_name = full_info.get("name", "User")
+
             return {
                 "status": "updated",
-                "recommendation": f"Updated details: {', '.join(f'{k}: {v}' for k,v in updates.items())}. Is this correct now?"
-            }
-        else:
-            return {
-                "status": "rejected",
-                "recommendation": "Could not detect fields to update. Please type like 'No, my age is 28'."
+                "recommendation": (
+                    f"Your information has been updated successfully:\n"
+                    f"{details}\n\nThank you, {customer_name}! Let's proceed to schedule your appointment."
+                ),
+                "customer_details": full_info,
+                "next_tool": "check_availability"
             }
 
-    # If unclear
-    return {"status": "unclear", "recommendation": "Please confirm: are your details correct? (yes/no)"}
+        return {
+            "status": "rejected",
+            "recommendation": (
+                "I couldn’t detect any changes. "
+                "Please specify like: 'No, my age is 30' or 'No, my email is example@gmail.com'."
+            )
+        }
+
+    # ---------------------------
+    # Unclear confirmation
+    # ---------------------------
+    return {
+        "status": "unclear",
+        "recommendation": "Please confirm if your details are correct (yes/no)."
+    }
+
 
 # --------------------------
 # 6. Check Availability
@@ -384,4 +429,4 @@ async def confirm_booking(chat_id: str, user_message: str, token: str = None):
 # --------------------------
 if __name__ == "__main__":
     logger.info("Starting MCP Healthcare Booking Server...")
-    mcp.run(transport="sse", host="127.0.0.1", port=8001)
+    mcp.run(transport="streamable-http", host="127.0.0.1", port=8001)

@@ -31,7 +31,7 @@ professionals = [
     {"name": "Dr. Varun Mehta", "type": "Neurologist", "city": "Bangalore", "working_days": ["Tuesday", "Thursday"], "working_hours": "10:00-16:00", "certification": "DM Neurology"},
     {"name": "Dr. Kavita Sharma", "type": "Dermatologist", "city": "Delhi", "working_days": ["Monday", "Thursday"], "working_hours": "11:00-17:00", "certification": "MD Dermatology"},
     {"name": "Dr. Aakash Singh", "type": "Neurologist", "city": "Delhi", "working_days": ["Tuesday", "Friday"], "working_hours": "10:00-15:00", "certification": "MS Orthopedics"},
-    {"name": "Dr. Pooja Desai", "type": "Neurologist", "city": "Kolkata", "working_days": ["Monday", "Wednesday", "Friday"], "working_hours": "09:00-14:00", "certification": "MD Pediatrics"},
+    {"name": "Dr. Pooja Desai", "type": "Neurologist", "city": "Kolkata", "working_days": ["Monday", "Wednesday", "Friday"], "working_hours": "09:00-14:00", "certification": "DM Neurology"},
     {"name": "Dr. Nivedita Rao", "type": "cardiologist", "city": "Bangalore", "working_days": ["Tuesday", "Thursday"], "working_hours": "10:00-16:00", "certification": "MD Gynecology"},
     {"name": "Dr. Ritesh Naik", "type": "Cardiologist", "city": "Pune", "working_days": ["Wednesday", "Friday"], "working_hours": "10:00-16:00", "certification": "MD Cardiology"},
 ]

@@ -3,12 +3,9 @@ from uuid import uuid4
 import redis
 from pymongo import MongoClient
 from loguru import logger
-import json
-import os
-
 from src.models.chat_schema import ChatMessage
 from src.utils.background_task import save_message, update_session_background
-from src.utils.helper_func import  extract_recommendation, extract_session
+from src.utils.helper_func import  extract_recommendation, extract_session,store_message_redis
 from src.mcp.mcp_client import MCPClient
 from src.utils.config import REDIS_HOST, REDIS_PASSWORD, REDIS_PORT, MONGODB_URI
 
@@ -16,11 +13,6 @@ from src.utils.config import REDIS_HOST, REDIS_PASSWORD, REDIS_PORT, MONGODB_URI
 # Initialize Router
 # ----------------------------
 router = APIRouter()
-
-# ----------------------------
-# Environment Configuration
-# ----------------------------
-REDIS_TTL = 3600 # default: 1 hour
 
 # ----------------------------
 # Database and Redis setup
@@ -38,20 +30,6 @@ booking_collection = db["bookings"]
 # ----------------------------
 mcp_client = MCPClient()
 
-# ----------------------------
-# Redis Helpers
-# ----------------------------
-def store_message_redis(chat_id: str, role: str, message: str, ttl: int = REDIS_TTL):
-    """
-    Append chat messages to Redis list and set TTL.
-    """
-    redis_key = f"session:{chat_id}:messages"
-    msg_entry = json.dumps({"role": role, "message": message})
-    r.rpush(redis_key, msg_entry)
-
-    # Set expiry if not already set
-    if r.ttl(redis_key) == -1:
-        r.expire(redis_key, ttl)
 
 
 # ----------------------------
