@@ -239,10 +239,9 @@ async def confirm_user_info(chat_id: str, user_message: str, token: str = None):
         return {
             "status": "confirmed",
             "recommendation": (
-                f"Thank you, {customer_name}! Your details have been confirmed:\n"
-                f"{details}\n\nLet's proceed to schedule your appointment."
+                f"Thank you, {customer_name}! Your details have been confirmed:\nLet's proceed to schedule your appointment."
+                
             ),
-            "customer_details": session_cache,
             "next_tool": "check_availability"
         }
 
@@ -287,18 +286,14 @@ async def confirm_user_info(chat_id: str, user_message: str, token: str = None):
             r.hset(session_key, mapping=updates)
             r.expire(session_key, SESSION_TTL)
             full_info = r.hgetall(session_key)
-
-            details = "\n".join(f"- {k.capitalize()}: {v}" for k, v in full_info.items() if k != "status")
             customer_name = full_info.get("name", "User")
 
             return {
                 "status": "updated",
                 "recommendation": (
                     f"Your information has been updated successfully:\n"
-                    f"{details}\n\nThank you, {customer_name}! Let's proceed to schedule your appointment."
+                    f"\nThank you, {customer_name}! Let's proceed to schedule your appointment."
                 ),
-                "customer_details": full_info,
-                "next_tool": "check_availability"
             }
 
         return {

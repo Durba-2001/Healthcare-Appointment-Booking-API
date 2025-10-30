@@ -1,4 +1,3 @@
-import asyncio
 import json
 from loguru import logger
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -8,16 +7,7 @@ from mcp.client.streamable_http import streamablehttp_client
 from dotenv import load_dotenv
 from src.utils.config import ACCESS_TOKEN, MCP_SERVER_URL, GOOGLE_API_KEY
 from src.utils.helper_func import extract_recommendation
-from pydantic import BaseModel, Field
 
-class ToolDecision(BaseModel):
-    """Structured schema for LLM tool selection output."""
-    tool: str = Field(..., description="The MCP tool to call next.")
-    arguments: dict = Field(..., description="Arguments to pass to the selected tool.")
-# --------------------------
-# Load environment variables
-# --------------------------
-load_dotenv()
 
 # --------------------------
 # Initialize LLM
@@ -36,7 +26,7 @@ class MCPClient:
     # -------------------------------------------------------------
     # Main pipeline: User message -> Tool decision -> MCP -> LLM summary
     # -------------------------------------------------------------
-    async def process_user_message(self, chat_id: str, user_message: str, first_message: bool = False) -> dict:
+    async def process_user_message(self, chat_id: str, user_message: str) -> dict:
         """Route user message through LLM -> MCP -> Tool Execution."""
         try:
             # -------------------------------
@@ -152,13 +142,14 @@ class MCPClient:
           1. ALWAYS inspect session_state and the last 10 messages before choosing a tool. 
           2. If session_state indicates REQUIRED FIELDS are missing (any of: city, selected_professional, name, age, contact, email) → call **collect_user_info** (or list_professionals / select_professional if earlier steps are incomplete). Provide the user's raw message in user_message. 
           3. If the user message contains new personal details (keywords or patterns like:
-            "my name is", "name is", "age is", "i am \d{1,3}", "years old", "my phone", "phone is", "contact is",
+            "my name is", "name is", "age is", "i am ", "years old", "my phone", "phone is", "contact is",
             a 10-digit number, or contains "@" and "." for email)
+            whenever use tool collect user info you should extract it from user message don't show validation error
             - If session_state does NOT yet contain complete user info (any of name, age, contact, or email missing)
             → call **collect_user_info** (the user is giving details for the first time)
             - ELSE (session_state already has these fields and user is replying with corrections)
             → call **confirm_user_info** (the user is updating a previously given field)
-                → After updating the response from the user (e.g yes) then it going to the check availability tool and
+                → After updating the response from the user (e.g yes) then it going to the check availability tool 
          4. Only call **confirm_user_info** when:
             a) session_state already contains customer details (name/age/contact/email)
             AND
@@ -200,23 +191,18 @@ class MCPClient:
         Your task: Based on the entire conversation and rules above, choose the **correct tool** for the next step. 
         """
 
-        structured_llm = llm.with_structured_output(ToolDecision)
+        response = await llm.ainvoke([HumanMessage(content=routing_prompt)]) 
+        decision_text = response.content.strip() # Clean formatting if decision_text.startswith(""):
+        decision_text = decision_text.strip("`").replace("json", "", 1).strip()
 
         try:
-            # Gemini will return a validated ToolDecision object
-            decision_obj = await structured_llm.ainvoke(routing_prompt)
-            decision_dict = decision_obj.model_dump()
+            parsed = json.loads(decision_text)
+        except json.JSONDecodeError:
+            logger.warning(f"Invalid JSON from LLM:\n{decision_text}")
+            parsed = {"tool": "recommend_service", "arguments": {"user_message": user_message}}
 
-        except Exception as e:
-            logger.warning(f"Failed to parse structured response: {e}")
-            decision_dict = {
-                "tool": "recommend_service",
-                "arguments": {"user_message": user_message},
-            }
-
-        # Add authentication and metadata
-        tool_name = decision_dict.get("tool", "recommend_service")
-        args = decision_dict.get("arguments", {})
+        tool_name = parsed.get("tool", "recommend_service")
+        args = parsed.get("arguments", {})
         args["chat_id"] = chat_id
         args["token"] = self.access_token
 
